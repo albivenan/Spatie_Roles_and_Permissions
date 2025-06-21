@@ -16,31 +16,30 @@ class PermissionSeeder extends Seeder
         // Reset cached roles and permissions
         app()[\Spatie\Permission\PermissionRegistrar::class]->forgetCachedPermissions();
 
-        // Create permissions
-        $permissions = [
-            'users.view',
-            'users.create',
-            'users.edit',
-            'users.delete',
-            'roles.view',
-            'roles.create',
-            'roles.edit',
-            'roles.delete',
+        // Define permissions by group
+        $permissionGroups = [
+            'users' => [
+                'view', 'create', 'edit', 'delete', 'view_any', 'force_delete', 'restore'
+            ],
+            'roles' => [
+                'view', 'create', 'edit', 'delete', 'view_any', 'update_any', 'delete_any'
+            ],
+            'permissions' => [
+                'view', 'view_any'
+            ]
         ];
 
-        $permissionModels = [];
-        foreach ($permissions as $permission) {
-            $permissionModels[] = Permission::firstOrCreate(['name' => $permission, 'guard_name' => 'web']);
+        // Create permissions
+        foreach ($permissionGroups as $group => $actions) {
+            foreach ($actions as $action) {
+                $name = "{$group}.{$action}";
+                Permission::firstOrCreate([
+                    'name' => $name,
+                    'guard_name' => 'web'
+                ]);
+            }
         }
 
-        // Create roles and assign created permissions
-        $role = \Spatie\Permission\Models\Role::firstOrCreate(['name' => 'superadmin', 'guard_name' => 'web']);
-        $role->syncPermissions($permissionModels);
-
-        $role = \Spatie\Permission\Models\Role::firstOrCreate(['name' => 'member', 'guard_name' => 'web']);
-        $role->syncPermissions([
-            'users.view',
-            'roles.view',
-        ]);
+        $this->command->info('Permissions seeded successfully.');
     }
 }

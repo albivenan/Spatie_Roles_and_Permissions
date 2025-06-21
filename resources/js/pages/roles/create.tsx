@@ -1,17 +1,26 @@
 import AppLayout from '@/layouts/app-layout';
 import { type BreadcrumbItem } from '@/types';
-import { Head, Link, useForm } from '@inertiajs/react';
+import { Head, Link, useForm, router } from '@inertiajs/react';
+import { useState, useEffect } from 'react';
 
 interface Role {
     id: number;
     name: string;
+    is_fixed: boolean;
     permissions: string[];
 };
 
 interface Permission {
     id: number;
     name: string;
+    group: string;
 };
+
+interface PermissionGroup {
+    name: string;
+    permissions: Permission[];
+    isOpen: boolean;
+}
 
 const breadcrumbs: BreadcrumbItem[] = [
     {
@@ -25,19 +34,101 @@ type Props = {
     permissions: Permission[];
 };
 
-export default function CreateRole({ roles, permissions }: Props) {
-    const { data, setData, errors, post, processing } = useForm({
+export default function CreateRole({ roles, permissions: allPermissions }: Props) {
+    const [permissionGroups, setPermissionGroups] = useState<PermissionGroup[]>([]);
+    
+    const { data, setData, errors, processing } = useForm({
         name: '',
         permissions: [] as string[],
+        is_fixed: false,
     });
+    
+    // Group permissions by their group name
+    useEffect(() => {
+        const groups: { [key: string]: Permission[] } = {};
+        
+        allPermissions.forEach(permission => {
+            const groupName = permission.name.split('.')[0];
+            if (!groups[groupName]) {
+                groups[groupName] = [];
+            }
+            groups[groupName].push(permission);
+        });
+        
+        // Convert to array and sort
+        const groupArray = Object.entries(groups).map(([name, permissions]) => ({
+            name,
+            permissions: permissions.sort((a, b) => a.name.localeCompare(b.name)),
+            isOpen: false
+        }));
+        
+        // Sort groups by name
+        groupArray.sort((a, b) => a.name.localeCompare(b.name));
+        
+        setPermissionGroups(groupArray);
+    }, [allPermissions]);
+    
+    const toggleGroup = (groupName: string) => {
+        setPermissionGroups(groups => 
+            groups.map(group => 
+                group.name === groupName 
+                    ? { ...group, isOpen: !group.isOpen } 
+                    : group
+            )
+        );
+    };
+    
+    const toggleAllInGroup = (groupName: string, permissions: Permission[]) => {
+        const groupPermissions = permissions.map(p => p.name);
+        const allSelected = groupPermissions.every(perm => 
+            data.permissions.includes(perm as never)
+        );
+        
+        if (allSelected) {
+            // Remove all permissions from this group
+            setData('permissions', 
+                data.permissions.filter(perm => !groupPermissions.includes(perm as string))
+            );
+        } else {
+            // Add all permissions from this group
+            const newPermissions = [...new Set([...data.permissions as string[], ...groupPermissions])];
+            setData('permissions', newPermissions);
+        }
+    };
 
     const handleSubmit = (e: React.FormEvent) => {
         e.preventDefault();
-        post(route('roles.store'), {
-            preserveScroll: true,
+        
+        // Dapatkan ID permission yang dipilih
+        const selectedPermissionIds = allPermissions
+            .filter(permission => data.permissions.includes(permission.name))
+            .map(permission => permission.id);
+        
+        // Kirim data dengan method POST biasa
+        const formData = new FormData();
+        formData.append('name', data.name);
+        formData.append('_method', 'post');
+        
+        // Tambahkan permission IDs
+        selectedPermissionIds.forEach(id => {
+            formData.append('permissions[]', id.toString());
+        });
+        
+        // Gunakan router.post dari Inertia
+        router.post(route('roles.store'), {
+            _method: 'post',
+            name: data.name,
+            permissions: selectedPermissionIds,
+        }, {
             onSuccess: () => {
                 setData('name', '');
+                setData('permissions', []);
             },
+            onError: (err) => {
+                console.error('Error creating role:', err);
+            },
+            preserveScroll: true,
+            preserveState: false
         });
     };
 
@@ -71,58 +162,160 @@ export default function CreateRole({ roles, permissions }: Props) {
 
                             <form onSubmit={handleSubmit} className="space-y-6">
                                 <div>
-                                    <label htmlFor="name" className="block text-sm font-medium text-gray-700 mb-1">Name</label>
-                                    <input 
-                                        type="text" 
-                                        id="name" 
-                                        name="name" 
-                                        required 
-                                        value={data.name}
-                                        onChange={(e) => setData('name', e.target.value)}
-                                        className={`w-full px-4 py-3 rounded-lg border ${
-                                            errors.name ? 'border-red-500' : 'border-gray-300'
-                                        } focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent transition duration-200 ease-in-out`}
-                                        placeholder="Enter role name"
-                                    />
+                                    <label htmlFor="name" className="block text-sm font-medium text-gray-700 mb-1">
+                                        Role Name
+                                        <span className="text-red-500">*</span>
+                                    </label>
+                                    <div className="mt-1 relative rounded-md shadow-sm">
+                                        <input 
+                                            type="text" 
+                                            id="name" 
+                                            name="name" 
+                                            required
+                                            value={data.name}
+                                            onChange={(e) => setData('name', e.target.value)}
+                                            className={`block w-full px-4 py-3 rounded-md border ${
+                                                errors.name ? 'border-red-500' : 'border-gray-300'
+                                            } focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent transition duration-200 ease-in-out`}
+                                            placeholder="e.g., content_manager"
+                                        />
+                                    </div>
                                     {errors.name && (
                                         <p className="mt-1 text-sm text-red-600">{errors.name}</p>
                                     )}
+                                    <p className="mt-1 text-sm text-gray-500">
+                                        Use lowercase with underscores (e.g., content_manager, report_viewer)
+                                    </p>
                                 </div>
 
                                 <div>
-                                    <label htmlFor="permissions" className="block text-sm font-medium text-gray-700 mb-1">Permissions</label>
-                                    <div className="space-y-2">
-                                        {permissions.map((permission) => (
-                                            <div key={permission.id} className="flex items-center">
-                                                <input
-                                                    type="checkbox"
-                                                    id={`permission-${permission.id}`}
-                                                    name="permissions[]"
-                                                    value={permission.name}
-                                                    checked={data.permissions.includes(permission.name)}
-                                                    onChange={(e) => {
-                                                        const newPermissions = [...data.permissions];
-                                                        if (e.target.checked) {
-                                                            newPermissions.push(permission.name);
-                                                        } else {
-                                                            const index = newPermissions.indexOf(permission.name);
-                                                            if (index > -1) {
-                                                                newPermissions.splice(index, 1);
-                                                            }
-                                                        }
-                                                        setData('permissions', newPermissions);
-                                                    }}
-                                                    className="h-4 w-4 rounded border-gray-300 text-indigo-600 focus:ring-indigo-500"
-                                                />
-                                                <label
-                                                    htmlFor={`permission-${permission.id}`}
-                                                    className="ml-3 text-sm text-gray-700"
+                                    <div className="flex items-center justify-between mb-4">
+                                        <label htmlFor="permissions" className="block text-sm font-medium text-gray-700">
+                                            Permissions
+                                            <span className="text-red-500">*</span>
+                                        </label>
+                                        <div className="text-sm">
+                                            <button 
+                                                type="button" 
+                                                onClick={() => {
+                                                    const allPerms = allPermissions.map(p => p.name);
+                                                    setData('permissions', allPerms);
+                                                }}
+                                                className="text-indigo-600 hover:text-indigo-900 mr-2"
+                                            >
+                                                Select All
+                                            </button>
+                                            <button 
+                                                type="button" 
+                                                onClick={() => setData('permissions', [])}
+                                                className="text-indigo-600 hover:text-indigo-900"
+                                            >
+                                                Clear All
+                                            </button>
+                                        </div>
+                                    </div>
+                                    
+                                    <div className="space-y-3">
+                                        {permissionGroups.map((group) => (
+                                            <div key={group.name} className="border rounded-lg overflow-hidden">
+                                                <div 
+                                                    className="flex items-center justify-between p-3 bg-gray-50 cursor-pointer"
+                                                    onClick={() => toggleGroup(group.name)}
                                                 >
-                                                    {permission.name}
-                                                </label>
+                                                    <div className="flex items-center">
+                                                        <span className="font-medium text-gray-900">
+                                                            {group.name.split('_').map(word => 
+                                                                word.charAt(0).toUpperCase() + word.slice(1)
+                                                            ).join(' ')}
+                                                        </span>
+                                                        <span className="ml-2 px-2 py-0.5 text-xs rounded-full bg-indigo-100 text-indigo-800">
+                                                            {group.permissions.length} permissions
+                                                        </span>
+                                                    </div>
+                                                    <div className="flex items-center">
+                                                        <span className="text-sm text-indigo-600 mr-2">
+                                                            {group.permissions.every(p => 
+                                                                (data.permissions as string[]).includes(p.name)
+                                                            ) ? 'All' : 
+                                                            group.permissions.some(p => 
+                                                                (data.permissions as string[]).includes(p.name)
+                                                            ) ? 'Some' : 'None'}
+                                                        </span>
+                                                        <svg 
+                                                            className={`w-5 h-5 text-gray-500 transform transition-transform ${group.isOpen ? 'rotate-180' : ''}`} 
+                                                            fill="none" 
+                                                            viewBox="0 0 24 24" 
+                                                            stroke="currentColor"
+                                                        >
+                                                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                                                        </svg>
+                                                    </div>
+                                                </div>
+                                                
+                                                {group.isOpen && (
+                                                    <div className="p-3 bg-white border-t">
+                                                        <div className="flex items-center mb-2">
+                                                            <input
+                                                                type="checkbox"
+                                                                id={`group-${group.name}`}
+                                                                checked={group.permissions.every(p => 
+                                                                    (data.permissions as string[]).includes(p.name)
+                                                                )}
+                                                                onChange={() => toggleAllInGroup(group.name, group.permissions)}
+                                                                className="h-4 w-4 rounded border-gray-300 text-indigo-600 focus:ring-indigo-500"
+                                                            />
+                                                            <label 
+                                                                htmlFor={`group-${group.name}`}
+                                                                className="ml-2 text-sm font-medium text-gray-700"
+                                                            >
+                                                                Select All
+                                                            </label>
+                                                        </div>
+                                                        
+                                                        <div className="space-y-2 pl-6">
+                                                            {group.permissions.map((permission) => (
+                                                                <div key={permission.id} className="flex items-center">
+                                                                    <input
+                                                                        type="checkbox"
+                                                                        id={`permission-${permission.id}`}
+                                                                        name="permissions[]"
+                                                                        value={permission.name}
+                                                                        checked={data.permissions.includes(permission.name)}
+                                                                        onChange={(e) => {
+                                                                            const newPermissions = [...data.permissions];
+                                                                            if (e.target.checked) {
+                                                                                newPermissions.push(permission.name);
+                                                                            } else {
+                                                                                const index = newPermissions.indexOf(permission.name);
+                                                                                if (index > -1) {
+                                                                                    newPermissions.splice(index, 1);
+                                                                                }
+                                                                            }
+                                                                            setData('permissions', newPermissions);
+                                                                        }}
+                                                                        className="h-4 w-4 rounded border-gray-300 text-indigo-600 focus:ring-indigo-500"
+                                                                    />
+                                                                    <label
+                                                                        htmlFor={`permission-${permission.id}`}
+                                                                        className="ml-2 text-sm text-gray-700"
+                                                                    >
+                                                                        {permission.name.split('.').slice(1).join('.') || permission.name}
+                                                                        <span className="text-xs text-gray-500 ml-1">
+                                                                            ({permission.name})
+                                                                        </span>
+                                                                    </label>
+                                                                </div>
+                                                            ))}
+                                                        </div>
+                                                    </div>
+                                                )}
                                             </div>
                                         ))}
                                     </div>
+                                    
+                                    {errors.permissions && (
+                                        <p className="mt-1 text-sm text-red-600">{errors.permissions}</p>
+                                    )}
                                 </div>
 
                                 <div>

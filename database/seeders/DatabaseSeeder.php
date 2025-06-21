@@ -13,20 +13,23 @@ class DatabaseSeeder extends Seeder
      */
     public function run(): void
     {
-        // Create default roles and permissions
+        // Create default permissions first, then roles and assign permissions
         $this->call([
             PermissionSeeder::class,
+            RolePermissionSeeder::class,
         ]);
 
-        // Create first admin user
-        $admin = User::factory()->create([
-            'name' => 'Admin User',
-            'email' => 'admin@example.com',
-            'password' => bcrypt('password'),
-        ]);
-        
-        // Assign superadmin role to the first user
-        $admin->assignRole('superadmin');
+        // Create first admin user if not exists
+        if (!User::where('email', 'admin@example.com')->exists()) {
+            $admin = User::factory()->create([
+                'name' => 'Admin User',
+                'email' => 'admin@example.com',
+                'password' => bcrypt('password'),
+            ]);
+            
+            // Assign super_admin role to the first user
+            $admin->assignRole('super_admin');
+        }
         
         // Create some test users with member role
         User::factory(5)->create()->each(function ($user) {

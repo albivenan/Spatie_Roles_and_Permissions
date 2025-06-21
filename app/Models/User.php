@@ -38,7 +38,7 @@ class User extends Authenticatable
             
             // Assign role based on user count
             if ($isFirstUser) {
-                $user->assignRole('superadmin');
+                $user->assignRole('super_admin');
             } else {
                 $user->assignRole('member');
             }

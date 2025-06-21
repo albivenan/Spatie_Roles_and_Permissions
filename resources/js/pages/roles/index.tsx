@@ -6,6 +6,7 @@ import { can } from '@/lib/can';
 type Role = {
     id: number;
     name: string;
+    is_fixed: boolean;
     permissions: {
         id: number;
         name: string;
@@ -58,7 +59,14 @@ export default function Roles({ roles }: Props) {
                             {roles.map((role:Role, index:number) => (
                                 <tr key={role.id} className="hover:bg-gray-50">
                                     <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">{index + 1}</td>
-                                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">{role.name}</td>
+                                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
+                                        {role.name}
+                                        {role.is_fixed && (
+                                            <span className="ml-2 inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-blue-100 text-blue-800">
+                                                Fixed
+                                            </span>
+                                        )}
+                                    </td>
                                     <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
                                         <div className="flex flex-wrap gap-2">
                                             {role.permissions.map((permission) => (
@@ -82,12 +90,19 @@ export default function Roles({ roles }: Props) {
                                             >
                                                 Edit
                                             </Link>}
-                                            {can('roles.delete') && <button
-                                                onClick={() => handleDelete(role.id)}
-                                                className="bg-red-600 hover:bg-red-700 text-white px-3 py-2 rounded-md text-sm font-medium transition duration-150 ease-in-out"
-                                            >
-                                                Delete
-                                            </button>}
+                                            {can('roles.delete') && !role.is_fixed && (
+                                                <button
+                                                    onClick={() => handleDelete(role.id)}
+                                                    className="bg-red-600 hover:bg-red-700 text-white px-3 py-2 rounded-md text-sm font-medium transition duration-150 ease-in-out"
+                                                >
+                                                    Delete
+                                                </button>
+                                            )}
+                                            {role.is_fixed && (
+                                                <span className="inline-flex items-center px-2.5 py-0.5 rounded-md text-xs font-medium bg-red-100 text-red-800">
+                                                    Fixed Role
+                                                </span>
+                                            )}
                                         </div>
                                     </td>
                                 </tr>

@@ -5,22 +5,12 @@ namespace App\Http\Controllers;
 use Illuminate\Http\Request;    
 use Inertia\Inertia;
 use Illuminate\Support\Facades\Hash;
+use Illuminate\Support\Facades\DB;
 use App\Models\User;
 use Spatie\Permission\Models\Role;
 
 class UserController extends Controller
 {
-    /**
-     * The attributes that are mass assignable.
-     *
-     * @var array<int, string>
-     */
-    protected $fillable = [
-        'name',
-        'email',
-        'password',
-    ];
-    
     /**
      * Display a listing of users.
      *
@@ -28,20 +18,40 @@ class UserController extends Controller
      */
     public function index()
     {
+        $this->authorize('viewAny', User::class);
+        
         // Get all users with their roles and permissions
-        $users = User::with('roles.permissions')->get();
-        // Get all roles with their permissions for filtering
-        $roles = Role::with('permissions')->get();
+        $users = User::with('roles.permissions')
+            ->latest()
+            ->get()
+            ->map(function ($user) {
+                return [
+                    'id' => $user->id,
+                    'name' => $user->name,
+                    'email' => $user->email,
+                    'email_verified_at' => $user->email_verified_at,
+                    'created_at' => $user->created_at->format('Y-m-d H:i:s'),
+                    'updated_at' => $user->updated_at->format('Y-m-d H:i:s'),
+                    'roles' => $user->roles->map(fn($role) => [
+                        'id' => $role->id,
+                        'name' => $role->name,
+                    ]),
+                    'can' => [
+                        'edit' => auth()->user()->can('update', $user),
+                        'delete' => auth()->user()->can('delete', $user),
+                    ]
+                ];
+            });
         
-        // Ensure roles are properly loaded for each user
-        foreach ($users as $user) {
-            $user->load('roles');
-        }
+        // Get all roles for the create/edit form
+        $roles = Role::orderBy('name')->get(['id', 'name']);
         
-        // Return the users index view with users and roles data
         return Inertia::render('users/index', [
             'users' => $users,
             'roles' => $roles,
+            'can' => [
+                'create' => auth()->user()->can('create', User::class),
+            ]
         ]);
     }
 
@@ -52,9 +62,10 @@ class UserController extends Controller
      */
     public function create()
     {
-        // Return the create user form with all available roles
+        $this->authorize('create', User::class);
+        
         return Inertia::render('users/create', [
-            'roles' => Role::all(),
+            'roles' => Role::orderBy('name')->get(['id', 'name']),
         ]);
     }
 
@@ -66,28 +77,44 @@ class UserController extends Controller
      */
     public function store(Request $request)
     {
-        // Validate the incoming request data
-        $request->validate([
+        $this->authorize('create', User::class);
+        
+        $validated = $request->validate([
             'name' => 'required|string|max:255',
             'email' => 'required|string|email|max:255|unique:users',
             'password' => 'required|string|min:8|confirmed',
-            'roles' => 'required|array',
+            'roles' => 'required|array|min:1',
             'roles.*' => 'exists:roles,id'
+        ], [
+            'roles.required' => 'Please select at least one role.',
+            'roles.min' => 'Please select at least one role.',
         ]);
 
-        // Create a new user with the validated data
-        $user = User::create([
-            'name' => $request->name,
-            'email' => $request->email,
-            'password' => Hash::make($request->password),
-        ]);
-        
-        // Sync the selected roles with the user
-        $user->syncRoles($request->roles);
-        
-        // Redirect to the users index with success message
-        return redirect()->route('users.index')
-            ->with('success', 'User created successfully.');
+        try {
+            DB::beginTransaction();
+            
+            // Create a new user with the validated data
+            $user = User::create([
+                'name' => $validated['name'],
+                'email' => $validated['email'],
+                'password' => Hash::make($validated['password']),
+                'email_verified_at' => now(),
+            ]);
+            
+            // Sync the selected roles with the user
+            $user->syncRoles($validated['roles']);
+            
+            DB::commit();
+            
+            return redirect()->route('users.index')
+                ->with('success', 'User created successfully.');
+                
+        } catch (\Exception $e) {
+            DB::rollBack();
+            return back()
+                ->withInput()
+                ->with('error', 'Failed to create user. ' . $e->getMessage());
+        }
     }
 
     /**
@@ -98,15 +125,29 @@ class UserController extends Controller
      */
     public function show(string $id)
     {
-        // Find the user by ID with their roles
         $user = User::with('roles')->findOrFail($id);
+        $this->authorize('view', $user);
         
-        // Return the user show view with user data
         return Inertia::render('users/show', [
-            'user' => $user,
+            'user' => [
+                'id' => $user->id,
+                'name' => $user->name,
+                'email' => $user->email,
+                'email_verified_at' => $user->email_verified_at?->format('Y-m-d H:i:s'),
+                'created_at' => $user->created_at->format('Y-m-d H:i:s'),
+                'updated_at' => $user->updated_at->format('Y-m-d H:i:s'),
+                'roles' => $user->roles->map(fn($role) => [
+                    'id' => $role->id,
+                    'name' => $role->name,
+                ]),
+            ],
+            'can' => [
+                'edit' => auth()->user()->can('update', $user),
+                'delete' => auth()->user()->can('delete', $user),
+            ]
         ]);
     }
-
+    
     /**
      * Show the form for editing the specified user.
      *
@@ -115,18 +156,20 @@ class UserController extends Controller
      */
     public function edit(string $id)
     {
-        // Find the user by ID with their roles
         $user = User::with('roles')->findOrFail($id);
-        // Get all roles for the role selection dropdown
-        $roles = Role::with('permissions')->get();
+        $this->authorize('update', $user);
         
-        // Return the edit user form with user and roles data
         return Inertia::render('users/edit', [
-            'user' => $user,
-            'roles' => $roles,
+            'user' => [
+                'id' => $user->id,
+                'name' => $user->name,
+                'email' => $user->email,
+                'roles' => $user->roles->pluck('id'),
+            ],
+            'roles' => Role::orderBy('name')->get(['id', 'name']),
         ]);
     }
-
+    
     /**
      * Update the specified user in storage.
      *
@@ -136,38 +179,52 @@ class UserController extends Controller
      */
     public function update(Request $request, string $id)
     {
-        // Find the user by ID
         $user = User::findOrFail($id);
+        $this->authorize('update', $user);
         
-        // Validate the incoming request data
         $validated = $request->validate([
             'name' => 'required|string|max:255',
             'email' => 'required|string|email|max:255|unique:users,email,' . $user->id,
             'password' => 'nullable|string|min:8|confirmed',
-            'roles' => 'required|array',
+            'roles' => 'required|array|min:1',
             'roles.*' => 'exists:roles,id'
+        ], [
+            'roles.required' => 'Please select at least one role.',
+            'roles.min' => 'Please select at least one role.',
         ]);
-
-        // Update the user with validated data
-        $user->name = $validated['name'];
-        $user->email = $validated['email'];
         
-        // Only update password if provided
-        if (!empty($validated['password'])) {
-            $user->password = Hash::make($validated['password']);
+        try {
+            DB::beginTransaction();
+            
+            // Update user data
+            $user->name = $validated['name'];
+            $user->email = $validated['email'];
+            
+            // Update password if provided
+            if (!empty($validated['password'])) {
+                $user->password = Hash::make($validated['password']);
+            }
+            
+            $user->save();
+            
+            // Sync roles (only if user is not updating themselves)
+            if (auth()->id() !== $user->id) {
+                $user->syncRoles($validated['roles']);
+            }
+            
+            DB::commit();
+            
+            return redirect()->route('users.index')
+                ->with('success', 'User updated successfully.');
+                
+        } catch (\Exception $e) {
+            DB::rollBack();
+            return back()
+                ->withInput()
+                ->with('error', 'Failed to update user. ' . $e->getMessage());
         }
-        
-        // Save the user
-        $user->save();
-        
-        // Sync the selected roles with the user
-        $user->syncRoles($validated['roles']);
-        
-        // Redirect to the users index with success message
-        return redirect()->route('users.index')
-            ->with('success', 'User updated successfully.');
     }
-
+    
     /**
      * Remove the specified user from storage.
      *
@@ -176,14 +233,28 @@ class UserController extends Controller
      */
     public function destroy(string $id)
     {
-        // Find the user by ID
         $user = User::findOrFail($id);
+        $this->authorize('delete', $user);
         
-        // Delete the user
-        $user->delete();
-        
-        // Redirect to the users index with success message
-        return redirect()->route('users.index')
-            ->with('success', 'User deleted successfully.');
+        try {
+            // Prevent deleting the currently authenticated user
+            if (auth()->id() === $user->id) {
+                return back()->with('error', 'You cannot delete your own account.');
+            }
+            
+            // Prevent deleting users with super_admin role
+            if ($user->hasRole('super_admin')) {
+                return back()->with('error', 'Cannot delete a user with super admin role.');
+            }
+            
+            $user->delete();
+            
+            return redirect()->route('users.index')
+                ->with('success', 'User deleted successfully.');
+                
+        } catch (\Exception $e) {
+            return back()
+                ->with('error', 'Failed to delete user. ' . $e->getMessage());
+        }
     }
 }
