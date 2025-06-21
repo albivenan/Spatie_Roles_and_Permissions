@@ -1,0 +1,494 @@
+import AppLayout from '@/layouts/app-layout';
+import { type BreadcrumbItem } from '@/types';
+import { Head, Link, useForm, router } from '@inertiajs/react';
+import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
+import { Shield, ArrowLeft, ChevronDown, ChevronUp, Loader2 } from 'lucide-react';
+import { toast } from 'react-toastify';
+import 'react-toastify/dist/ReactToastify.css';
+
+// Types
+interface PermissionAction {
+  view: boolean;
+  create: boolean;
+  edit: boolean;
+  delete: boolean;
+}
+
+interface Permission {
+  id: number;
+  name: string;
+  group: string;
+  description?: string;
+  isActive: boolean;
+  actions: PermissionAction;
+}
+
+interface Role {
+  id: number;
+  name: string;
+  is_active: boolean;
+  is_fixed: boolean;
+  permissions: string[];
+}
+
+interface Props {
+  role: Role;
+  allPermissions: Permission[];
+  can: {
+    update: boolean;
+  };
+}
+
+// Toggle Switch Component
+const ToggleSwitch: React.FC<{
+  checked: boolean;
+  onChange: (checked: boolean) => void;
+  disabled?: boolean;
+  className?: string;
+}> = ({ checked, onChange, disabled = false, className = '' }) => (
+  <button
+    type="button"
+    role="switch"
+    aria-checked={checked}
+    disabled={disabled}
+    onClick={() => !disabled && onChange(!checked)}
+    className={`${
+      checked ? 'bg-blue-600' : 'bg-gray-200'
+    } relative inline-flex h-6 w-11 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 ${
+      disabled ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'
+    } ${className}`}
+  >
+    <span
+      className={`${
+        checked ? 'translate-x-6' : 'translate-x-1'
+      } inline-block h-4 w-4 transform rounded-full bg-white transition-transform`}
+    />
+  </button>
+);
+
+// Permission Group Component
+const PermissionGroup: React.FC<{
+  groupName: string;
+  permissions: Permission[];
+  onTogglePermission: (id: number, action: string, value: boolean) => void;
+  disabled?: boolean;
+}> = ({ groupName, permissions, onTogglePermission, disabled = false }) => {
+  const [isOpen, setIsOpen] = useState(false);
+  const allSelected = permissions.every(p => p.isActive);
+  const someSelected = permissions.some(p => p.isActive) && !allSelected;
+
+  return (
+    <div className="border rounded-md mb-4">
+      <div 
+        className="flex items-center justify-between p-4 bg-gray-50 cursor-pointer"
+        onClick={() => setIsOpen(!isOpen)}
+      >
+        <div className="flex items-center">
+          <ToggleSwitch
+            checked={allSelected}
+            onChange={(checked) => {
+              permissions.forEach(p => {
+                onTogglePermission(p.id, 'isActive', checked);
+              });
+            }}
+            disabled={disabled}
+          />
+          <span className="ml-3 font-medium">{groupName}</span>
+          {someSelected && (
+            <span className="ml-2 px-2 py-0.5 text-xs bg-blue-100 text-blue-800 rounded-full">
+              Sebagian
+            </span>
+          )}
+        </div>
+        {isOpen ? <ChevronUp className="h-5 w-5 text-gray-500" /> : <ChevronDown className="h-5 w-5 text-gray-500" />}
+      </div>
+      
+      {isOpen && (
+        <div className="p-4 space-y-4">
+          {permissions.map(permission => (
+            <div key={permission.id} className="pl-8">
+              <div className="flex items-center justify-between">
+                <div>
+                  <div className="font-medium">{permission.name}</div>
+                  <p className="text-sm text-gray-500">{permission.description || 'Tidak ada deskripsi'}</p>
+                </div>
+                <div className="flex space-x-4">
+                  {permission.actions && Object.entries(permission.actions).map(([action, isAllowed]) => (
+                    <div key={action} className="flex items-center">
+                      <span className="text-sm text-gray-500 w-16 capitalize">{action}</span>
+                      <ToggleSwitch
+                        checked={isAllowed as boolean}
+                        onChange={(checked) => onTogglePermission(permission.id, action, checked)}
+                        disabled={disabled || !permission.isActive}
+                      />
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+};
+
+const EditRole: React.FC<Props> = ({ role: initialRole, allPermissions, can }) => {
+  const [role, setRole] = useState<Role>(initialRole);
+  const [isSaving, setIsSaving] = useState(false);
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [enhancedPermissions, setEnhancedPermissions] = useState<Permission[]>([]);
+  const [localChanges, setLocalChanges] = useState<Record<string, any>>({});
+  const [expandedGroups, setExpandedGroups] = useState<Record<string, boolean>>({});
+  const saveTimeout = useRef<NodeJS.Timeout | null>(null);
+
+  // Group permissions by their group name
+  const groupedPermissions = useMemo(() => {
+    return enhancedPermissions.reduce<Record<string, Permission[]>>((acc, permission) => {
+      const group = permission.group || 'Other';
+      if (!acc[group]) {
+        acc[group] = [];
+      }
+      acc[group].push(permission);
+      return acc;
+    }, {});
+  }, [enhancedPermissions]);
+
+  // Initialize expanded groups
+  useEffect(() => {
+    const initialExpanded = Object.keys(groupedPermissions).reduce<Record<string, boolean>>((acc, group) => {
+      acc[group] = true;
+      return acc;
+    }, {});
+    setExpandedGroups(initialExpanded);
+  }, [groupedPermissions]);
+
+  // Save changes with debounce
+  const saveChanges = useCallback(async (changes: Record<string, any>) => {
+    if (Object.keys(changes).length === 0) return;
+
+    setIsSaving(true);
+
+    try {
+      const dataToSend = {
+        ...changes,
+        permissions: enhancedPermissions
+          .filter(p => p.isActive)
+          .flatMap(p => {
+            const actions: string[] = [];
+            if (p.actions.view) actions.push(`${p.name}.view`);
+            if (p.actions.create) actions.push(`${p.name}.create`);
+            if (p.actions.edit) actions.push(`${p.name}.edit`);
+            if (p.actions.delete) actions.push(`${p.name}.delete`);
+            return actions;
+          })
+      };
+
+      await router.put(route('roles.update', role.id), dataToSend, {
+        preserveScroll: true,
+        onSuccess: () => {
+          setLocalChanges({});
+          toast.success('Perubahan berhasil disimpan');
+        },
+        onError: (errors: any) => {
+          console.error('Gagal menyimpan perubahan:', errors);
+          toast.error('Gagal menyimpan perubahan');
+        }
+      });
+    } catch (error) {
+      console.error('Error saving changes:', error);
+      toast.error('Terjadi kesalahan saat menyimpan');
+    } finally {
+      setIsSaving(false);
+    }
+  }, [enhancedPermissions, role.id]);
+
+  // Handle form submission
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!can.update || role.is_fixed) return;
+
+    setIsSubmitting(true);
+
+    try {
+      const permissionsToUpdate = enhancedPermissions
+        .filter(p => p.isActive)
+        .flatMap(p => {
+          const actions: string[] = [];
+          if (p.actions.view) actions.push(`${p.name}.view`);
+          if (p.actions.create) actions.push(`${p.name}.create`);
+          if (p.actions.edit) actions.push(`${p.name}.edit`);
+          if (p.actions.delete) actions.push(`${p.name}.delete`);
+          return actions;
+        });
+
+      await router.put(route('roles.update', role.id), {
+        name: role.name,
+        is_active: role.is_active,
+        permissions: permissionsToUpdate
+      });
+
+      toast.success('Role berhasil diperbarui');
+    } catch (error) {
+      toast.error('Gagal memperbarui role');
+      console.error(error);
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  // Toggle permission action
+  const handleTogglePermission = useCallback((permissionId: number, action: string, value: boolean) => {
+    setEnhancedPermissions(prev => {
+      const updated = prev.map(p => {
+        if (p.id !== permissionId) return p;
+
+        if (action === 'isActive') {
+          return {
+            ...p,
+            isActive: value,
+            actions: {
+              view: value,
+              create: value ? p.actions.create : false,
+              edit: value ? p.actions.edit : false,
+              delete: value ? p.actions.delete : false,
+            }
+          };
+        }
+
+        return {
+          ...p,
+          actions: {
+            ...p.actions,
+            [action]: value
+          }
+        };
+      });
+
+      // Update local changes
+      const updatedPermission = updated.find(p => p.id === permissionId);
+      if (updatedPermission) {
+        setLocalChanges(prev => ({
+          ...prev,
+          [permissionId]: updatedPermission
+        }));
+      }
+
+      return updated;
+    });
+  }, []);
+
+  // Toggle group expansion
+  const toggleGroup = useCallback((group: string) => {
+    setExpandedGroups(prev => ({
+      ...prev,
+      [group]: !prev[group]
+    }));
+  }, []);
+
+  // Initialize enhanced permissions
+  useEffect(() => {
+    if (!allPermissions || allPermissions.length === 0) return;
+
+    const enhanced = allPermissions.map(permission => {
+      const [permissionName, action] = permission.name.split('.');
+      
+      return {
+        ...permission,
+        name: permissionName,
+        isActive: permission.actions.view || permission.actions.create || 
+                 permission.actions.edit || permission.actions.delete,
+        actions: {
+          view: permission.actions.view || false,
+          create: permission.actions.create || false,
+          edit: permission.actions.edit || false,
+          delete: permission.actions.delete || false,
+        }
+      };
+    });
+
+    setEnhancedPermissions(enhanced);
+  }, [allPermissions]);
+
+  // Save changes with debounce
+  useEffect(() => {
+    if (Object.keys(localChanges).length === 0) return;
+
+    if (saveTimeout.current) {
+      clearTimeout(saveTimeout.current);
+    }
+
+    saveTimeout.current = setTimeout(() => {
+      saveChanges(localChanges);
+    }, 500);
+
+    return () => {
+      if (saveTimeout.current) {
+        clearTimeout(saveTimeout.current);
+      }
+    };
+  }, [localChanges, saveChanges]);
+
+  const breadcrumbs: BreadcrumbItem[] = [
+    { title: 'Dashboard', href: '/dashboard' },
+    { title: 'Roles', href: '/roles' },
+    { title: `Edit Role: ${role.name}`, href: '#' },
+  ];
+
+  return (
+    <AppLayout breadcrumbs={breadcrumbs}>
+      <Head title={`Edit Role - ${role.name}`} />
+      
+      <div className="max-w-7xl mx-auto py-6 sm:px-6 lg:px-8">
+        <div className="px-4 py-6 sm:px-0">
+          {isSaving && (
+            <div className="mb-4 flex items-center text-yellow-600 bg-yellow-50 p-3 rounded-md">
+              <Loader2 className="animate-spin h-4 w-4 mr-2" />
+              <span>Menyimpan perubahan...</span>
+            </div>
+          )}
+
+          <form onSubmit={handleSubmit}>
+            <div className="bg-white shadow sm:rounded-md overflow-hidden">
+              <div className="px-4 py-5 sm:p-6">
+                <div className="space-y-6">
+                  <div>
+                    <label htmlFor="role-name" className="block text-sm font-medium text-gray-700">
+                      Nama Role
+                    </label>
+                    <div className="mt-1">
+                      <input
+                        type="text"
+                        id="role-name"
+                        value={role.name}
+                        onChange={(e) => setRole(prev => ({ ...prev, name: e.target.value }))}
+                        className="shadow-sm focus:ring-blue-500 focus:border-blue-500 block w-full sm:text-sm border-gray-300 rounded-md"
+                        disabled={!can.update || role.is_fixed}
+                      />
+                    </div>
+                  </div>
+
+                  <div>
+                    <div className="flex items-center">
+                      <span className="block text-sm font-medium text-gray-700 mr-4">
+                        Status
+                      </span>
+                      <ToggleSwitch
+                        checked={role.is_active}
+                        onChange={(checked) => setRole(prev => ({ ...prev, is_active: checked }))}
+                        disabled={!can.update || role.is_fixed}
+                      />
+                      <span className="ml-2 text-sm text-gray-600">
+                        {role.is_active ? 'Aktif' : 'Nonaktif'}
+                      </span>
+                    </div>
+                    {!role.is_active && (
+                      <p className="mt-2 text-sm text-yellow-600">
+                        Role tidak aktif. Pengguna dengan role ini tidak dapat mengakses halaman apapun.
+                      </p>
+                    )}
+                  </div>
+
+                  <div>
+                    <h3 className="text-lg font-medium leading-6 text-gray-900 mb-4">
+                      Hak Akses
+                    </h3>
+                    <div className="space-y-4">
+                      {Object.entries(groupedPermissions).map(([groupName, permissions]) => (
+                        <div key={groupName} className="border rounded-md">
+                          <div 
+                            className="flex items-center justify-between p-4 bg-gray-50 cursor-pointer"
+                            onClick={() => toggleGroup(groupName)}
+                          >
+                            <div className="flex items-center">
+                              <span className="font-medium">{groupName}</span>
+                              <span className="ml-2 text-sm text-gray-500">
+                                ({permissions.filter(p => p.isActive).length} dari {permissions.length} aktif)
+                              </span>
+                            </div>
+                            {expandedGroups[groupName] ? (
+                              <ChevronUp className="h-5 w-5 text-gray-500" />
+                            ) : (
+                              <ChevronDown className="h-5 w-5 text-gray-500" />
+                            )}
+                          </div>
+                          
+                          {expandedGroups[groupName] && (
+                            <div className="p-4 space-y-4">
+                              {permissions.map(permission => (
+                                <div key={permission.id} className="border rounded-md p-4">
+                                  <div className="flex items-center justify-between">
+                                    <div>
+                                      <div className="font-medium">{permission.name}</div>
+                                      <p className="text-sm text-gray-500">
+                                        {permission.description || 'Tidak ada deskripsi'}
+                                      </p>
+                                    </div>
+                                    <ToggleSwitch
+                                      checked={permission.isActive}
+                                      onChange={(checked) => 
+                                        handleTogglePermission(permission.id, 'isActive', checked)
+                                      }
+                                      disabled={!can.update || role.is_fixed}
+                                    />
+                                  </div>
+                                  
+                                  {permission.isActive && (
+                                    <div className="mt-4 pl-4 border-l-2 border-gray-200 space-y-3">
+                                      {Object.entries(permission.actions).map(([action, isAllowed]) => (
+                                        <div key={action} className="flex items-center justify-between">
+                                          <span className="text-sm text-gray-600 capitalize">
+                                            {action}
+                                          </span>
+                                          <ToggleSwitch
+                                            checked={isAllowed as boolean}
+                                            onChange={(checked) => 
+                                              handleTogglePermission(permission.id, action, checked)
+                                            }
+                                            disabled={!can.update || role.is_fixed || !permission.isActive}
+                                          />
+                                        </div>
+                                      ))}
+                                    </div>
+                                  )}
+                                </div>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              </div>
+              
+              <div className="px-4 py-3 bg-gray-50 text-right sm:px-6">
+                <Link
+                  href={route('roles.index')}
+                  className="inline-flex items-center px-4 py-2 border border-gray-300 shadow-sm text-sm font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 mr-3"
+                >
+                  <ArrowLeft className="h-4 w-4 mr-2" />
+                  Kembali
+                </Link>
+                <button
+                  type="submit"
+                  disabled={isSubmitting || !can.update || role.is_fixed}
+                  className="inline-flex justify-center py-2 px-4 border border-transparent shadow-sm text-sm font-medium rounded-md text-white bg-blue-600 hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  {isSubmitting ? (
+                    <>
+                      <Loader2 className="animate-spin -ml-1 mr-2 h-4 w-4" />
+                      Menyimpan...
+                    </>
+                  ) : 'Simpan Perubahan'}
+                </button>
+              </div>
+            </div>
+          </form>
+        </div>
+      </div>
+    </AppLayout>
+  );
+};
+
+export default EditRole;
